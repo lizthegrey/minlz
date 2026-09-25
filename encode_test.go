@@ -823,31 +823,23 @@ var encodeAsmGolden = map[string]string{
 }
 
 // TestEncodePoolsRoundTrip checks that every assembly encoder returns its
-// scratch table to the pool it took it from, typed as that pool's Get expects.
-//
-// sync.Pool promises nothing about Get returning what Put just stored, and
-// this test relies on the current implementation doing so. The failure it
-// guards against is deterministic: a table handed to another family's pool
-// makes that family's next Get fail its type assertion and allocate, while the
-// family that lost it allocates on every call. Both happened on amd64 before
+// scratch table to the pool it took it from, typed as that pool's Get expects,
+// and to no other pool. A table handed to another family's pool makes that
+// family's next Get fail its type assertion and allocate, while the family
+// that lost it allocates on every call. Both happened on amd64 before
 // encodeBlockFast's Put was pointed at encFastPools.
 //
-// Two things can lose a pooled value between Put and Get in a normal build.
-// Put stores into the current P's private slot, which Get on another P cannot
-// steal, so a goroutine migrated between the two sees an empty pool. And two
-// GCs in between drop the value outright (one only moves it to the victim
-// cache). The test pins GOMAXPROCS to 1 and disables GC while it runs to rule
-// out both.
+// sync.Pool does not promise that Get returns what Put stored, so this test
+// uses the same guards as the standard library's own TestPool in
+// $GOROOT/src/sync/pool_test.go, which asserts exactly that: GC is disabled,
+// so nothing is evicted, and the test is skipped under the race detector,
+// where Put randomly drops its argument. TestPool pins the P with an
+// unexported runtime hook; GOMAXPROCS(1) does the same job here, since Put
+// fills a per-P private slot that Get on another P cannot reach.
 //
-// Neither helps under the race
-// detector, sync.Pool.Put deliberately drops its argument on the floor about
-// one time in four (see the "Randomly drop x on floor" branch in
-// $GOROOT/src/sync/pool.go) specifically to keep callers honest about not
-// relying on Get returning what Put just stored. That makes every subtest
-// here independently ~25% likely to see an empty pool, so the test flakes on
-// -race no matter how carefully the surrounding code avoids GCs or
-// goroutine switches: skip it there rather than chase a race that is a
-// documented property of the allocator, not a bug in the encoders.
+// Every pool is drained before each encode, so a correctly typed table left
+// behind by an earlier test cannot stand in for one that went astray, and
+// drained again after it to check where the table actually went.
 func TestEncodePoolsRoundTrip(t *testing.T) {
 	if !hasAsm {
 		t.Skip("no assembly encoders in this build; the pure-Go encoders use no pools")
@@ -861,12 +853,25 @@ func TestEncodePoolsRoundTrip(t *testing.T) {
 	type family struct {
 		name   string
 		encode func(dst, src []byte) int
-		pool   func(i int) *sync.Pool
+		pools  []sync.Pool
 	}
 	families := []family{
-		{"fast", encodeBlockFast, func(i int) *sync.Pool { return &encFastPools[i] }},
-		{"default", encodeBlock, func(i int) *sync.Pool { return &encPools[i] }},
-		{"better", encodeBlockBetter, func(i int) *sync.Pool { return &encBetterPools[i] }},
+		{"fast", encodeBlockFast, encFastPools[:]},
+		{"default", encodeBlock, encPools[:]},
+		{"better", encodeBlockBetter, encBetterPools[:]},
+	}
+	type slot struct{ family, pool int }
+	// drainAll empties every pool of every family and returns what each held.
+	drainAll := func() map[slot][]any {
+		held := make(map[slot][]any)
+		for fi, f := range families {
+			for i := range f.pools {
+				for v := f.pools[i].Get(); v != nil; v = f.pools[i].Get() {
+					held[slot{fi, i}] = append(held[slot{fi, i}], v)
+				}
+			}
+		}
+		return held
 	}
 	// One input size per dispatch class, with the pool index and table size
 	// encode_asm.go uses for it, per family.
@@ -890,17 +895,25 @@ func TestEncodePoolsRoundTrip(t *testing.T) {
 			t.Run(f.name+"/"+c.name, func(t *testing.T) {
 				src := genEncText(rng, c.size)
 				dst := make([]byte, MaxEncodedLen(len(src)))
+				drainAll()
 				f.encode(dst, src)
+				held := drainAll()
 
-				pool := f.pool(c.pool[fi])
-				got := pool.Get()
-				if got == nil {
-					t.Fatalf("pool %d is empty after encoding: the table was returned somewhere else", c.pool[fi])
+				target := slot{fi, c.pool[fi]}
+				if len(held[target]) == 0 {
+					t.Errorf("%s pool %d is empty after encoding: the table was returned somewhere else", f.name, target.pool)
 				}
-				defer pool.Put(got)
 				want := reflect.PointerTo(reflect.ArrayOf(c.table[fi], reflect.TypeOf(byte(0))))
-				if reflect.TypeOf(got) != want {
-					t.Fatalf("pool %d holds %v, want %v", c.pool[fi], reflect.TypeOf(got), want)
+				for s, vs := range held {
+					for _, v := range vs {
+						switch {
+						case s != target:
+							t.Errorf("%s pool %d received a %v; only %s pool %d should have",
+								families[s.family].name, s.pool, reflect.TypeOf(v), f.name, target.pool)
+						case reflect.TypeOf(v) != want:
+							t.Errorf("%s pool %d holds %v, want %v", f.name, target.pool, reflect.TypeOf(v), want)
+						}
+					}
 				}
 			})
 		}
