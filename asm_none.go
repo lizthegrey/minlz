@@ -24,10 +24,6 @@ import (
 // The block encoders and hasAsm live in encode_generic.go: arm64 builds this
 // file for the helpers below but takes the encoders from assembly.
 
-// hasLZ4ConvertAsm reports whether cvtLZ4BlockAsm below is the real assembly
-// routine. It is not: this file's copy panics. See lz4convert_asm.go.
-const hasLZ4ConvertAsm = false
-
 // emitLiteral writes a literal chunk and returns the number of bytes written.
 //
 // It assumes that:
@@ -298,9 +294,4 @@ func matchLen(a []byte, b []byte) int {
 		}
 	}
 	return len(a) + checked
-}
-
-// cvtLZ4Block converts an LZ4 block to MinLZ
-func cvtLZ4BlockAsm(dst []byte, src []byte) (uncompressed int, dstUsed int) {
-	panic("not implemented")
 }
