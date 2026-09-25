@@ -23,6 +23,8 @@ import (
 	"fmt"
 	"math/rand"
 	"reflect"
+	"runtime"
+	"runtime/debug"
 	"sort"
 	"sync"
 	"testing"
@@ -703,6 +705,18 @@ func TestEncodeAsmGolden(t *testing.T) {
 				sum := sha256.Sum256(enc)
 				got[key] = hex.EncodeToString(sum[:])
 
+				// Catches the case where every architecture is wrong the same
+				// way, which a digest comparison alone would not. Runs before
+				// the regeneration return so a broken encoder cannot mint new
+				// digests.
+				dec, err := Decode(nil, enc)
+				if err != nil {
+					t.Fatalf("Decode: %v", err)
+				}
+				if !bytes.Equal(dec, src) {
+					t.Fatalf("round trip differs from input at offset %d", matchLen(dec, src))
+				}
+
 				if *updateEncodeGolden {
 					return
 				}
@@ -713,16 +727,6 @@ func TestEncodeAsmGolden(t *testing.T) {
 				if got[key] != want {
 					t.Errorf("encoded output differs from the amd64 reference\n got %s (%d bytes)\nwant %s",
 						got[key], len(enc), want)
-				}
-
-				// Catches the case where every architecture is wrong the same
-				// way, which a digest comparison alone would not.
-				dec, err := Decode(nil, enc)
-				if err != nil {
-					t.Fatalf("Decode: %v", err)
-				}
-				if !bytes.Equal(dec, src) {
-					t.Fatalf("round trip differs from input at offset %d", matchLen(dec, src))
 				}
 			})
 		}
@@ -821,14 +825,21 @@ var encodeAsmGolden = map[string]string{
 // TestEncodePoolsRoundTrip checks that every assembly encoder returns its
 // scratch table to the pool it took it from, typed as that pool's Get expects.
 //
-// sync.Pool promises nothing about Get returning what Put just stored, but
-// with no allocation in between it does in practice, and the failure this
+// sync.Pool promises nothing about Get returning what Put just stored, and
+// this test relies on the current implementation doing so. The failure it
 // guards against is deterministic: a table handed to another family's pool
 // makes that family's next Get fail its type assertion and allocate, while the
 // family that lost it allocates on every call. Both happened on amd64 before
 // encodeBlockFast's Put was pointed at encFastPools.
 //
-// That "in practice" is only true for a normal build. Under the race
+// Two things can lose a pooled value between Put and Get in a normal build.
+// Put stores into the current P's private slot, which Get on another P cannot
+// steal, so a goroutine migrated between the two sees an empty pool. And two
+// GCs in between drop the value outright (one only moves it to the victim
+// cache). The test pins GOMAXPROCS to 1 and disables GC while it runs to rule
+// out both.
+//
+// Neither helps under the race
 // detector, sync.Pool.Put deliberately drops its argument on the floor about
 // one time in four (see the "Randomly drop x on floor" branch in
 // $GOROOT/src/sync/pool.go) specifically to keep callers honest about not
@@ -844,6 +855,8 @@ func TestEncodePoolsRoundTrip(t *testing.T) {
 	if race.Enabled {
 		t.Skip("sync.Pool.Put randomly drops its argument under the race detector; this test's pool round-trip check cannot pass reliably there")
 	}
+	defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(1))
+	defer debug.SetGCPercent(debug.SetGCPercent(-1))
 
 	type family struct {
 		name   string
