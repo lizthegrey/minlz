@@ -14,7 +14,7 @@
 
 // decodeBlockAsm here is generated: it is lowered to arm64 from the same avo
 // program that produces the amd64 decoder, and it replaced a hand-written
-// arm64 decoder that it outperformed. See decodeblock_arm64.s.
+// arm64 decoder that it outperformed. See asm_arm64.s.
 
 //go:build arm64 && !appengine && !noasm && gc && !purego
 

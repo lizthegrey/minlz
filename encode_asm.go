@@ -15,7 +15,7 @@
 // Renamed from encode_amd64.go, where the _amd64 filename suffix -- not the
 // constraint below -- was what limited it to one architecture. The dispatch
 // itself is architecture-neutral: arm64 now supplies the same encodeBlockAsm*
-// symbols from encodeblock_arm64.s.
+// symbols from asm_arm64.s.
 
 //go:build (amd64 || arm64) && !appengine && !noasm && gc && !purego
 

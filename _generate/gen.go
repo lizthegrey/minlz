@@ -16,14 +16,12 @@ package main
 
 //go:generate go run gen.go -out ../asm_amd64.s -stubs ../asm_amd64.go -pkg=minlz
 //go:generate gofmt -w ../asm_amd64.go
-// avo appends the -arch suffix to -out itself, so ../encodeblock.s is written
-// as ../encodeblock_arm64.s. -stubs takes no such suffix and is spelled in
-// full. The asymmetry is avo's, not a typo: spelling -out with the suffix
-// already on it yields encodeblock_arm64_arm64.s.
-//go:generate go run gen.go -out ../encodeblock.s -stubs ../encodeblock_arm64.go -arch arm64 -arm64gen -pkg=minlz
-//go:generate gofmt -w ../encodeblock_arm64.go
-//go:generate go run gen.go -out ../decodeblock.s -stubs ../decodeblock_arm64.go -arch arm64 -arm64gen -widemove -decoderonly -pkg=minlz
-//go:generate gofmt -w ../decodeblock_arm64.go
+// avo appends the -arch suffix to -out itself, so ../asm.s is written as
+// ../asm_arm64.s. -stubs takes no such suffix and is spelled in full. The
+// asymmetry is avo's, not a typo: spelling -out with the suffix already on it
+// yields asm_arm64_arm64.s.
+//go:generate go run gen.go -out ../asm.s -stubs ../asm_arm64.go -arch arm64 -arm64gen -pkg=minlz
+//go:generate gofmt -w ../asm_arm64.go
 
 import (
 	"flag"
@@ -47,21 +45,8 @@ const (
 )
 
 // genArm64 restricts generation to the subset that the avo arm64 lowering can
-// reproduce, and swaps the SSE memmove helpers for scalar ones. The decoder
-// stays out of this pass: it is emitted separately by -decoderonly because it
-// needs the wider memmove.
+// reproduce, and swaps the SSE memmove helpers for scalar ones.
 var genArm64 = flag.Bool("arm64gen", false, "generate only the arm64-lowerable subset, with scalar memmove")
-
-// genWideMove makes the scalar memmove helpers move 16 bytes per unit instead
-// of 8, in the long copy loop and the short blocks alike, so the two widths can
-// be benchmarked against each other and against Go's own memmove.
-var genWideMove = flag.Bool("widemove", false, "with -arm64gen, move 16 bytes per unit in the scalar memmove helpers, the long copy loop and the short blocks alike")
-
-// genDecoderOnly emits just the decoder, into its own file so the encoders keep
-// the memmove width they were measured with. On arm64 this is the decoder that
-// ships: it replaced a hand-written one, which it beat on Neoverse-N1 while
-// tying on incompressible input.
-var genDecoderOnly = flag.Bool("decoderonly", false, "with -arm64gen, emit only decodeBlockAsm")
 
 func main() {
 	flag.Parse()
@@ -78,23 +63,6 @@ func main() {
 		inputMargin:  17,
 		skipOutput:   false,
 		scalarMove:   *genArm64,
-		wideMove:     *genWideMove,
-	}
-
-	if *genDecoderOnly {
-		// Emitted into its own file so the encoders keep the memmove width
-		// they were measured with: the decoder needs the 16-byte form to fit
-		// in amd64's register file at all, which is not a reason to change
-		// what the encoders do.
-		//
-		// maxLen, maxOffset and the margins are deliberately left at their
-		// zero/struct defaults here. genDecodeBlockAsm reads none of them: it
-		// sets inputMargin and outputMargin itself for each of the two decode
-		// loops it emits, and maxLen/maxOffset are encoder-side settings. The
-		// only option that reaches the decoder is the memmove width.
-		o.genDecodeBlockAsm("decodeBlockAsm")
-		Generate()
-		return
 	}
 
 	// 16 bit hash table has too big of a speed impact.
@@ -146,8 +114,14 @@ func main() {
 		o.genEmitCopyLits2()
 		o.genEmitCopyLits3()
 		o.genMatchLen()
-		o.genDecodeBlockAsm("decodeBlockAsm")
+	} else {
+		// The decoder needs the 16-byte scalar memmove to fit in amd64's
+		// register file at all. The encoders above keep the 8-byte form they
+		// were measured with. genDecodeBlockAsm sets its own margins per
+		// decode loop, so the memmove width is the only option it reads.
+		o.wideMove = true
 	}
+	o.genDecodeBlockAsm("decodeBlockAsm")
 
 	// This has quite low impact, so we disable it.
 	if false {
