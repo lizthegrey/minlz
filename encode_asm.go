@@ -22,14 +22,10 @@
 package minlz
 
 import (
-	"sync"
-
 	"github.com/minio/minlz/internal/race"
 )
 
 const hasAsm = true
-
-var encFastPools [7]sync.Pool
 
 // encodeBlock encodes a non-empty src to a guaranteed-large-enough dst. It
 // assumes that the varint-encoded length of the decompressed bytes has already
@@ -111,8 +107,6 @@ func encodeBlockFast(dst, src []byte) (d int) {
 	return 0
 }
 
-var encPools [7]sync.Pool
-
 // encodeBlock encodes a non-empty src to a guaranteed-large-enough dst. It
 // assumes that the varint-encoded length of the decompressed bytes has already
 // been written.
@@ -192,8 +186,6 @@ func encodeBlock(dst, src []byte) (d int) {
 	}
 	return 0
 }
-
-var encBetterPools [6]sync.Pool
 
 // encodeBlockBetter encodes a non-empty src to a guaranteed-large-enough dst. It
 // assumes that the varint-encoded length of the decompressed bytes has already
