@@ -597,17 +597,41 @@ pack_done:
 	VTBX   V1.B16, [V4.B16], V5.B16; \
 	VST1.P [V5.B16], 16(R0)
 
-// STEP64 loads the next 64 bitmap bits to R9, the running popcounts of their bytes to R10
-// and the right counts before chunks 1-3 to R19-R21.
-#define STEP64 \
-	MOVD    (R1), R9;          \
-	FMOVD.P 8(R1), F0;         \
-	VCNT    V0.B8, V0.B8;      \
-	FMOVD   F0, R10;           \
-	MUL     R8, R10, R10;      \
-	UBFX    $8, R10, $8, R19;  \
-	UBFX    $24, R10, $8, R20; \
-	UBFX    $40, R10, $8, R21
+// The 64-output merge loops are software pipelined: the popcounts of the next bitmap word
+// are computed before the current word's outputs, so their latency overlaps the merges.
+// R1 stays at the current word, R9 and R10 hold its bits and running popcounts.
+
+// STEP64_FIRST loads the bitmap word at R1 to R9 and its running popcounts to R10.
+#define STEP64_FIRST \
+	MOVD  (R1), R9;       \
+	FMOVD (R1), F0;       \
+	VCNT  V0.B8, V0.B8;   \
+	FMOVD F0, R10;        \
+	MUL   R8, R10, R10
+
+// STEP64_NEXT loads the next word to R16 and its running popcounts to R17, from 8(R1) when
+// R4 >= 128 so that it is whole, else from R1 again, and sets the right counts before
+// chunks 1-3 of the current word to R19-R21.
+#define STEP64_NEXT \
+	CMP   $128, R4;          \
+	ADD   $8, R1, R11;       \
+	CSEL  GE, R11, R1, R11;  \
+	MOVD  (R11), R16;        \
+	FMOVD (R11), F0;         \
+	VCNT  V0.B8, V0.B8;      \
+	FMOVD F0, R17;           \
+	MUL   R8, R17, R17;      \
+	UBFX  $8, R10, $8, R19;  \
+	UBFX  $24, R10, $8, R20; \
+	UBFX  $40, R10, $8, R21
+
+// STEP64_ADVANCE moves to the next word and sets the flags for R4 >= 64.
+#define STEP64_ADVANCE \
+	ADD  $8, R1, R1;   \
+	MOVD R16, R9;      \
+	MOVD R17, R10;     \
+	SUB  $64, R4, R4;  \
+	CMP  $64, R4
 
 // POP(reg) sets R10 to the popcount of the low 16 bits of reg.
 #define POP(reg) \
@@ -787,20 +811,22 @@ vv:
 	MERGE_SETUP
 	VMOVI $240, V31.B16
 
-vv_loop64:
 	CMP $64, R4
 	BLT vv_loop16
-	STEP64
+	STEP64_FIRST
+
+vv_loop64:
+	STEP64_NEXT
 	VV16(0, ZR)
 	VV16(16, R19)
 	VV16(32, R20)
 	VV16(48, R21)
-	LSR $56, R10, R10
-	ADD R10, R3, R3
-	SUB R10, R2, R2
-	ADD $64, R2, R2
-	SUB $64, R4, R4
-	B   vv_loop64
+	LSR  $56, R10, R10
+	ADD  R10, R3, R3
+	SUB  R10, R2, R2
+	ADD  $64, R2, R2
+	STEP64_ADVANCE
+	BGE  vv_loop64
 
 vv_loop16:
 	CMP     $16, R4
@@ -835,17 +861,19 @@ cv:
 	MOVBU Op_P(R23), R9
 	VDUP  R9, V30.B16
 
-cv_loop64:
 	CMP $64, R4
 	BLT cv_loop16
-	STEP64
+	STEP64_FIRST
+
+cv_loop64:
+	STEP64_NEXT
 	CV16(0, ZR)
 	CV16(16, R19)
 	CV16(32, R20)
 	CV16(48, R21)
 	ADD R10>>56, R3, R3
-	SUB $64, R4, R4
-	B   cv_loop64
+	STEP64_ADVANCE
+	BGE cv_loop64
 
 cv_loop16:
 	CMP     $16, R4
