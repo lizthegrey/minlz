@@ -263,6 +263,133 @@ dpattern:
 	VADD  V7.B16, V1.B16, V1.B16
 	B     dstore
 
+#define LLX R21
+#define OFFX R23
+
+// func simdCopyNEON(dst *byte, lits *byte, tok *byte, llx *byte, offx *uint32, esc *byte, n int, st *[4]int) int
+// The operations take their literal lengths from llx and their offsets from offx.
+TEXT ·simdCopyNEON(SB), NOSPLIT, $0-72
+	MOVD dst+0(FP), DST
+	MOVD lits+8(FP), LITS
+	MOVD tok+16(FP), TOKP
+	MOVD llx+24(FP), LLX
+	MOVD offx+32(FP), OFFX
+	MOVD esc+40(FP), ESCP
+	MOVD n+48(FP), TOKEND
+	MOVD st+56(FP), ST
+	MOVD ESCP, R24
+	ADD  TOKP, TOKEND
+	MOVD (ST), DP
+	ADD  DST, DP
+	MOVD 8(ST), R14
+	ADD  LITS, R14, LITP
+	MOVD 16(ST), LAST
+	MOVD $simdPermTab<>(SB), PERMTAB
+	CMP  TOKEND, TOKP
+	BHS  cdone
+	PCALIGN $64
+
+cloop:
+	MOVBU.P 1(TOKP), TOK
+	FLDPQ   (LITP), (F0, F1)
+	FSTPQ   (F0, F1), (DP)
+	MOVBU.P 1(LLX), LEN
+	MOVWU.P 4(OFFX), LAST
+	CMP     $33, LEN
+	BEQ     clitlong
+
+clitback:
+	ADD  LEN, DP
+	ADD  LEN, LITP
+	SUBS LAST, DP, R14
+	CCMP HS, R14, DST, $0
+	BLO  cclamp
+	CMP  TOK>>2, LAST
+	BLO  cpattern
+	FLDPQ (R14), (F2, F3)
+	FSTPQ (F2, F3), (DP)
+
+ccheck:
+	CMP $132, TOK
+	BHS clong
+
+cnext:
+	ADD TOK>>2, DP
+	CMP TOKEND, TOKP
+	BLO cloop
+
+cdone:
+	SUB  DST, DP
+	MOVD DP, (ST)
+	SUB  LITS, LITP
+	MOVD LITP, 8(ST)
+	MOVD LAST, 16(ST)
+	SUB  R24, ESCP, R14
+	MOVD R14, ret+64(FP)
+	RET
+
+cpattern:
+	FLDPQ (R14), (F2, F3)
+	ADD   LAST<<5, PERMTAB, R15
+	FLDPQ (R15), (F4, F5)
+	VTBL  V4.B16, [V2.B16, V3.B16], V6.B16
+	VTBL  V5.B16, [V2.B16, V3.B16], V7.B16
+	FSTPQ (F6, F7), (DP)
+	B     ccheck
+
+cclamp:
+	MOVD  DST, R14
+	SUB   DST, DP, R16
+	FLDPQ (R14), (F2, F3)
+	CMP   TOK>>2, R16
+	BHS   cclampcopy
+	ADD   R16<<5, PERMTAB, R15
+	FLDPQ (R15), (F4, F5)
+	VTBL  V4.B16, [V2.B16, V3.B16], V2.B16
+	VTBL  V5.B16, [V2.B16, V3.B16], V3.B16
+
+cclampcopy:
+	FSTPQ (F2, F3), (DP)
+	B     ccheck
+
+clitlong:
+	MOVBU.P 1(ESCP), R15
+	ADD     $33, R15, LEN
+	ADD     $32, R15
+	LSR     $5, R15
+	ADD     $32, LITP, R14
+	ADD     $32, DP, R16
+
+clitloop:
+	FLDPQ.P 32(R14), (F2, F3)
+	FSTPQ.P (F2, F3), 32(R16)
+	SUBS    $1, R15
+	BNE     clitloop
+	B       clitback
+
+clong:
+	SUB  R14, DP, R16
+	CMP  $32, R16
+	BHS  clongok
+	MOVD $1, R15
+	MOVD R15, 24(ST)
+
+clongok:
+	MOVBU.P 1(ESCP), R15
+	ADD     $33, R15, TOK
+	LSL     $2, TOK
+	ADD     $32, R15
+	LSR     $5, R15
+	ADD     $32, R14
+	ADD     $32, DP, R16
+
+clongloop:
+	FLDPQ.P 32(R14), (F2, F3)
+	FSTPQ.P (F2, F3), 32(R16)
+	SUBS    $1, R15
+	BNE     clongloop
+	B       cnext
+
 	// The stream checks of chunks take 16 bytes at a time; n is a multiple of 16 above 0.
 	// They keep the largest byte, or byte - 1, in V7, and sum bytes with UADDLV into D lanes.
 

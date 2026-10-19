@@ -21,6 +21,8 @@
 package minlz
 
 import (
+	"unsafe"
+
 	"github.com/minio/minlz/internal/cpu"
 	"github.com/minio/minlz/internal/race"
 )
@@ -58,9 +60,43 @@ func simdExec(dst, lits []byte, c *simdChunk, n int, st *[4]int) {
 	case c.delta:
 		simdExecDeltaNEON(&dst[0], &lits[0], &c.tok[0], &c.ll[0], &c.offc[0], &c.raw[0], &c.esc[0], n, st)
 	default:
-		simdExecNEON(&dst[0], &lits[0], &c.tok[0], &c.ll[0], &c.offc[0], &c.raw[0], &c.esc[0], n, st)
+		simdExecBatched(dst, lits, c, n, st)
 	}
 }
+
+// simdExecBatched runs the first n operations of c, expanding the literal lengths and
+// offsets of up to 64 operations at a time for simdCopyNEON. c must not use delta literals.
+func simdExecBatched(dst, lits []byte, c *simdChunk, n int, st *[4]int) {
+	var llx [64]byte
+	var offx [64]uint32
+	last := st[2]
+	li, oi, gi, pos := 0, 0, 0, 0
+	for i := 0; i < n; i += len(llx) {
+		m := min(len(llx), n-i)
+		for j, t := range c.tok[i : i+m] {
+			lit := t >> 1 & 1
+			llx[j] = c.ll[li] & -lit
+			li += int(lit)
+			if t&1 == 0 {
+				ot := simdOffTab[c.offc[oi]]
+				oi++
+				nb := ot >> 24
+				last = int(ot&0xffffff) + int(load64(c.raw, pos>>3)>>(pos&7)&(1<<nb-1))
+				pos += int(nb)
+			}
+			offx[j] = uint32(last)
+		}
+		// esc may be exhausted, so gi can be len(c.esc).
+		gi += simdCopyNEON(&dst[0], &lits[0], &c.tok[i], &llx[0], &offx[0], (*byte)(unsafe.Add(unsafe.Pointer(&c.esc[0]), gi)), m, st)
+	}
+	st[2] = last
+}
+
+// simdCopyNEON runs n operations from tok, with their literal lengths in llx (0 without
+// literals) and their offsets in offx. It returns the number of escapes it read from esc.
+//
+//go:noescape
+func simdCopyNEON(dst, lits, tok, llx *byte, offx *uint32, esc *byte, n int, st *[4]int) int
 
 // simdExecNEON runs the first n operations of a chunk. st holds the output position,
 // the literal position, the repeat offset and an error flag.
