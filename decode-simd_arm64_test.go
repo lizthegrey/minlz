@@ -25,13 +25,15 @@ import (
 // simdTiers runs f as a subtest for each SIMD block tier, with that tier forced.
 // The neon tier runs the per-operation loops, and neon-batch the batched loops.
 func simdTiers(t *testing.T, f func(t *testing.T)) {
-	neon, batch := cpu.NEON, simdBatchNEON
-	defer func() { cpu.NEON, simdBatchNEON = neon, batch }()
+	neon, batch, variant := cpu.NEON, simdBatchNEON, simdBatchVariant
+	defer func() { cpu.NEON, simdBatchNEON, simdBatchVariant = neon, batch, variant }()
 	for _, tier := range []struct {
 		name        string
 		neon, batch bool
-	}{{"go", false, false}, {"neon", true, false}, {"neon-batch", true, true}} {
-		cpu.NEON, simdBatchNEON = tier.neon, tier.batch
+		variant     int
+	}{{"go", false, false, 0}, {"neon", true, false, 0}, {"neon-batch", true, true, 0},
+		{"neon-batch-noahead", true, true, 1}, {"neon-batch-plain", true, true, 2}} {
+		cpu.NEON, simdBatchNEON, simdBatchVariant = tier.neon, tier.batch, tier.variant
 		t.Run(tier.name, f)
 	}
 }

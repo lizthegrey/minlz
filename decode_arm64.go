@@ -62,10 +62,21 @@ func simdExec(dst, lits []byte, c *simdChunk, n int, st *[4]int) {
 	switch {
 	case !cpu.NEON:
 		simdExecGo(dst, lits, c, n, st)
-	case simdBatchNEON && c.delta:
-		simdExecBatchDeltaNEON(&dst[0], &lits[0], &c.tok[0], &c.ll[0], &c.offc[0], &c.raw[0], &c.esc[0], n, st)
 	case simdBatchNEON:
-		simdExecBatchNEON(&dst[0], &lits[0], &c.tok[0], &c.ll[0], &c.offc[0], &c.raw[0], &c.esc[0], n, st)
+		switch simdBatchVariant*2 + b2i(c.delta) {
+		case 0:
+			simdExecBatchNEON(&dst[0], &lits[0], &c.tok[0], &c.ll[0], &c.offc[0], &c.raw[0], &c.esc[0], n, st)
+		case 1:
+			simdExecBatchDeltaNEON(&dst[0], &lits[0], &c.tok[0], &c.ll[0], &c.offc[0], &c.raw[0], &c.esc[0], n, st)
+		case 2:
+			simdExecBatchNoAheadNEON(&dst[0], &lits[0], &c.tok[0], &c.ll[0], &c.offc[0], &c.raw[0], &c.esc[0], n, st)
+		case 3:
+			simdExecBatchNoAheadDeltaNEON(&dst[0], &lits[0], &c.tok[0], &c.ll[0], &c.offc[0], &c.raw[0], &c.esc[0], n, st)
+		case 4:
+			simdExecBatchPlainNEON(&dst[0], &lits[0], &c.tok[0], &c.ll[0], &c.offc[0], &c.raw[0], &c.esc[0], n, st)
+		case 5:
+			simdExecBatchPlainDeltaNEON(&dst[0], &lits[0], &c.tok[0], &c.ll[0], &c.offc[0], &c.raw[0], &c.esc[0], n, st)
+		}
 	case c.delta:
 		simdExecDeltaNEON(&dst[0], &lits[0], &c.tok[0], &c.ll[0], &c.offc[0], &c.raw[0], &c.esc[0], n, st)
 	default:
@@ -80,10 +91,21 @@ func simdExecFlat(dst, lits []byte, c *simdChunk, k0, k int, cur [4]int, st *[4]
 	switch {
 	case !cpu.NEON:
 		simdExecFlatGo(dst, lits, c, k0, k, cur, st)
-	case simdBatchNEON && c.delta:
-		simdExecBatchFlatDeltaNEON(&dst[0], &lits[0], tok, ll, offc, &c.raw[0], esc, n, cur[3], st)
 	case simdBatchNEON:
-		simdExecBatchFlatNEON(&dst[0], &lits[0], tok, ll, offc, &c.raw[0], esc, n, cur[3], st)
+		switch simdBatchVariant*2 + b2i(c.delta) {
+		case 0:
+			simdExecBatchFlatNEON(&dst[0], &lits[0], tok, ll, offc, &c.raw[0], esc, n, cur[3], st)
+		case 1:
+			simdExecBatchFlatDeltaNEON(&dst[0], &lits[0], tok, ll, offc, &c.raw[0], esc, n, cur[3], st)
+		case 2:
+			simdExecBatchNoAheadFlatNEON(&dst[0], &lits[0], tok, ll, offc, &c.raw[0], esc, n, cur[3], st)
+		case 3:
+			simdExecBatchNoAheadFlatDeltaNEON(&dst[0], &lits[0], tok, ll, offc, &c.raw[0], esc, n, cur[3], st)
+		case 4:
+			simdExecBatchPlainFlatNEON(&dst[0], &lits[0], tok, ll, offc, &c.raw[0], esc, n, cur[3], st)
+		case 5:
+			simdExecBatchPlainFlatDeltaNEON(&dst[0], &lits[0], tok, ll, offc, &c.raw[0], esc, n, cur[3], st)
+		}
 	case c.delta:
 		simdExecFlatDeltaNEON(&dst[0], &lits[0], tok, ll, offc, &c.raw[0], esc, n, cur[3], st)
 	default:
@@ -132,6 +154,41 @@ func simdExecBatchFlatNEON(dst, lits, tok, ll, offc, raw, esc *byte, n, pos int,
 //
 //go:noescape
 func simdExecBatchFlatDeltaNEON(dst, lits, tok, ll, offc, raw, esc *byte, n, pos int, st *[4]int)
+
+// simdBatchVariant selects the batched loops to benchmark: 0 is the default, 1 expands each batch
+// as it starts, and 2 runs the operations of a batch in a loop.
+var simdBatchVariant int
+
+func b2i(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+//go:noescape
+func simdExecBatchNoAheadNEON(dst, lits, tok, ll, offc, raw, esc *byte, n int, st *[4]int)
+
+//go:noescape
+func simdExecBatchNoAheadDeltaNEON(dst, lits, tok, ll, offc, raw, esc *byte, n int, st *[4]int)
+
+//go:noescape
+func simdExecBatchNoAheadFlatNEON(dst, lits, tok, ll, offc, raw, esc *byte, n, pos int, st *[4]int)
+
+//go:noescape
+func simdExecBatchNoAheadFlatDeltaNEON(dst, lits, tok, ll, offc, raw, esc *byte, n, pos int, st *[4]int)
+
+//go:noescape
+func simdExecBatchPlainNEON(dst, lits, tok, ll, offc, raw, esc *byte, n int, st *[4]int)
+
+//go:noescape
+func simdExecBatchPlainDeltaNEON(dst, lits, tok, ll, offc, raw, esc *byte, n int, st *[4]int)
+
+//go:noescape
+func simdExecBatchPlainFlatNEON(dst, lits, tok, ll, offc, raw, esc *byte, n, pos int, st *[4]int)
+
+//go:noescape
+func simdExecBatchPlainFlatDeltaNEON(dst, lits, tok, ll, offc, raw, esc *byte, n, pos int, st *[4]int)
 
 // simdTokStatsAsm returns the statistics of a prefix of tok, and its length. See simdTokStats.
 func simdTokStatsAsm(tok []byte) (out, nLit, nRep, nEsc, n int, ok bool) {
